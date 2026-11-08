@@ -1,0 +1,20 @@
+byd-root
+Copyright 2026 xiaojinwen
+
+This product is licensed under the Apache License, Version 2.0.
+
+This product includes third-party software developed by third parties:
+
+- adblib (com.cgutman.adblib)
+  Copyright (c) 2013, Cameron Gutman
+  All rights reserved.
+  Licensed under the BSD 3-Clause License.
+  See app/src/main/java/com/cgutman/adblib/LICENSE for the full text.
+
+- miuix (top.yukonga.miuix.kmp)
+  Copyright The compose-miuix-ui contributors
+  Licensed under the Apache License, Version 2.0.
+
+- Jetpack Compose / AndroidX
+  Copyright The Android Open Source Project
+  Licensed under the Apache License, Version 2.0.
