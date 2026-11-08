@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 插入车机（ADB / fastboot）时自动唤起 app。
+     只按厂商 VID 过滤，避免插充电器也弹窗；设备模式仍由 UsbTransport.find() 动态判定。 -->
+<resources>
+    <usb-device vendor-id="6353" />   <!-- 0x18D1 Google / AOSP fastboot &amp; ADB -->
+    <usb-device vendor-id="3004" />   <!-- 0x0BB4 -->
+    <usb-device vendor-id="8888" />   <!-- 0x22B8 -->
+    <usb-device vendor-id="1256" />   <!-- 0x04E8 -->
+    <usb-device vendor-id="4817" />   <!-- 0x12D1 -->
+    <usb-device vendor-id="1478" />   <!-- 0x05C6 Qualcomm -->
+    <usb-device vendor-id="3725" />   <!-- 0x0E8D MediaTek -->
+    <usb-device vendor-id="10007" />  <!-- 0x2717 -->
+    <usb-device vendor-id="10864" />  <!-- 0x2A70 -->
+    <usb-device vendor-id="6610" />   <!-- 0x19D2 -->
+</resources>

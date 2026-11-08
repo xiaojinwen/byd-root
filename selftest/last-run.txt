@@ -1,0 +1,58 @@
+[1] config.txt 版本映射
+  PASS  5 个控制器版本
+  PASS  13 -> boot MD5
+  PASS  21 -> 核心 2506090
+[2] /etc/system.prop 版本识别
+  PASS  读取 outswver
+  PASS  控制器 = 13
+  PASS  核心版本 = 2511250
+  PASS  boot 文件名
+[3] 模块包名内嵌 MD5
+  PASS  解析 MD5
+  PASS  无 MD5 返回 null
+[4] ADB 消息编解码
+  PASS  校验和 / magic
+  PASS  CNXN 命令
+  PASS  maxdata = 65536
+  PASS  host:: 载荷
+[5] ADB RSA 公钥（adbd 授权用）
+  PASS  以 NUL 结尾
+  PASS  RSAPublicKey 结构 524 字节
+  PASS  2048bit = 64 words
+  PASS  exponent = 65537
+[6] AUTH TOKEN 签名（PKCS#1 v1.5 + SHA1）
+  PASS  签名 256 字节
+  PASS  签名内 token 原文一致
+  PASS  PKCS#1 v1.5 头部 00 01
+[7] 全分区备份清单 / 恢复脚本
+  PASS  eMMC 分区推整盘
+  PASS  UFS 分区推整盘
+  PASS  整盘不再被截断
+  PASS  分区表安全解析（跳过非法名）
+  PASS  LBA / 大小换算
+  PASS  镜像文件名
+  PASS  getprop 解析
+  PASS  SHA-256 提取
+  PASS  用户数据分区识别
+  PASS  manifest.json 含设备与分区
+  PASS  PC 回刷脚本含 fastboot flash
+  PASS  PC 回刷脚本跳过 userdata
+  PASS  9008 rawprogram 含 LBA
+  PASS  文件名安全化
+
+单元结果: 34 passed, 0 failed
+
+[8] ADB 协议回环（模拟 adbd 全双工）
+  PASS  CNXN 握手完成
+  PASS  AUTH SIGNATURE 已发送且为 256B
+  PASS  AUTH RSA_PUBLIC 结构合法(524B)
+  PASS  设备已回 CNXN
+  PASS  协商 maxdata = 65536
+  PASS  shell: 文本输出正确
+  PASS  shellStream 字节数正确
+  PASS  shellStream 二进制逐字节一致
+  PASS  sync: 收到 DONE
+  PASS  sync: push 内容逐字节一致
+  PASS  OPEN 服务名解析正确
+
+回环结果: 11 passed, 0 failed
