@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -319,21 +320,18 @@ fun LogSheet(
     val codeBg = if (state.logs.isEmpty()) MiuixTheme.colorScheme.surfaceContainer
     else MiuixTheme.colorScheme.surfaceContainerHighest
 
+    // 非模态浮层：不加全屏遮罩。之前用 fillMaxSize + clickable 的遮罩会把整页点击吞掉，
+    // 日志展开时点「分步执行」按钮只会收起日志、点不动按钮，看起来像按钮被禁用。
     Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .clickable(onClick = onClose)
-        )
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 // 必须有明确高度：Column 内 LazyColumn 用了 weight(1f)，
                 // 若高度是 wrap-content，剩余空间为 0，日志列表会被压成 0dp。
-                .fillMaxHeight(0.72f)
+                .fillMaxHeight(0.62f)
                 .heightIn(max = 480.dp)
+                .shadow(18.dp, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                 .background(
                     MiuixTheme.colorScheme.surface,
                     RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
