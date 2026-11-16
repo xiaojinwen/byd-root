@@ -590,8 +590,8 @@ class MainActivity : ComponentActivity(), UiBridge, FlashActions, ToolsActions {
         val h = settings.host.orEmpty()
         val useWifi = settings.wifiAdb && h.isNotBlank()
         if (!useWifi && UsbTransport.find(this, UsbTransport.MODE_ADB) == null &&
-            UsbTransport.find(this, UsbTransport.MODE_FASTBOOT) != null) {
-            throw IOException("车机当前处于 fastboot 模式，无法推送 / 安装；请先重启回系统（fastboot reboot）后再操作")
+            UsbTransport.hasStrictFastboot(this)) {
+            throw IOException("未检测到 ADB 接口，车机当前看起来处于 fastboot / bootloader；请先重启回系统（fastboot reboot）后再操作")
         }
         val adb = AdbClient(this, this)
         try {

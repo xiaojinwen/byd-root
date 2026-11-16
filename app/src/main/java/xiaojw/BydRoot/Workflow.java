@@ -218,10 +218,12 @@ public final class Workflow {
         if (adb != null && adb.isConnected()) { ui.log("ok", "复用当前 ADB 连接"); return; }
         if (adb != null) adb.close();
         boolean useWifi = settings.wifiAdb && settings.host != null && !settings.host.trim().isEmpty();
-        // 只有 fastboot 设备、没有 ADB 接口时直接拦下：fastboot 下无法 adb push / pm install。
+        // 只有「严格 fastboot 特征」且完全没有 ADB 接口时才拦下：
+        // 用 find(MODE_FASTBOOT) 判断会把 ADB 接口也误判成 fastboot（该分支为兼容非标准
+        // bootloader 放宽到任意 vendor 接口），导致车机明明在 ADB 也提示「没有进入 ADB」。
         if (!useWifi && UsbTransport.find(ctx, UsbTransport.MODE_ADB) == null
-                && UsbTransport.find(ctx, UsbTransport.MODE_FASTBOOT) != null) {
-            throw new IOException("车机当前处于 fastboot 模式，无法执行 adb push / pm install；"
+                && UsbTransport.hasStrictFastboot(ctx)) {
+            throw new IOException("未检测到 ADB 接口，车机当前看起来处于 fastboot / bootloader；"
                     + "请先重启回系统（fastboot reboot 或长按电源）后再操作");
         }
         adb = newClient();

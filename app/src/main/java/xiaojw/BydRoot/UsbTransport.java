@@ -93,6 +93,24 @@ public final class UsbTransport {
                 if (t != null) return t;
             }
         }
+        // ADB 宽松兜底：部分车机（尤其车机 ROM）ADB 接口的 protocol 不是规范的 0x01，
+        // 严格匹配会漏掉，导致「明明在 ADB 却提示没有 ADB 接口」。这里只要接口不是
+        // fastboot 特征、也不是 9008 设备，就按 ADB 试连（连不上会正常超时报错）。
+        if (MODE_ADB.equals(mode)) {
+            for (UsbDevice d : devices.values()) {
+                if (d.getVendorId() == 0x05C6 && EDL_PIDS.contains(d.getProductId())) continue;
+                for (int i = 0; i < d.getInterfaceCount(); i++) {
+                    UsbInterface intf = d.getInterface(i);
+                    if (intf.getInterfaceClass() != UsbConstants.USB_CLASS_VENDOR_SPEC) continue;
+                    String name = intf.getName() == null ? "" : intf.getName().toLowerCase(Locale.US);
+                    if (name.contains("fastboot")) continue;
+                    if (intf.getInterfaceSubclass() == 0x42
+                            && (intf.getInterfaceProtocol() == 0x03 || intf.getInterfaceProtocol() == 0x02)) continue;
+                    Target t = makeTarget(d, intf, mode);
+                    if (t != null) return t;
+                }
+            }
+        }
         if (MODE_FASTBOOT.equals(mode)) {
             for (UsbDevice d : devices.values()) {
                 // 兼容 VID/PID 命中但接口描述符不标准的 bootloader
@@ -115,6 +133,30 @@ public final class UsbTransport {
             }
         }
         return null;
+    }
+
+    /**
+     * 是否存在「明确的 fastboot/bootloader 特征」。
+     * 只用严格条件（接口名含 fastboot，或 subclass 0x42 且 protocol=0x03/0x02），
+     * 不能用 find(MODE_FASTBOOT) 判断——那个兜底会匹配任意 vendor 接口，
+     * 车机在 ADB 模式时也会命中，从而误报「处于 fastboot」。
+     */
+    public static boolean hasStrictFastboot(Context ctx) {
+        UsbManager mgr = manager(ctx);
+        if (mgr == null) return false;
+        for (UsbDevice d : mgr.getDeviceList().values()) {
+            for (int i = 0; i < d.getInterfaceCount(); i++) {
+                UsbInterface intf = d.getInterface(i);
+                String name = intf.getName() == null ? "" : intf.getName().toLowerCase(Locale.US);
+                if (name.contains("fastboot")) return true;
+                if (intf.getInterfaceClass() == UsbConstants.USB_CLASS_VENDOR_SPEC
+                        && intf.getInterfaceSubclass() == 0x42
+                        && (intf.getInterfaceProtocol() == 0x03 || intf.getInterfaceProtocol() == 0x02)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static boolean knownFastbootVidPid(UsbDevice d) {
@@ -184,6 +226,10 @@ public final class UsbTransport {
                 announced = true;
             }
             Thread.sleep(1000);
+        }
+        if (MODE_ADB.equals(mode)) {
+            throw new IOException("未检测到 ADB 接口（" + timeoutMs / 1000 + "s）：请确认车机已开机进入系统、"
+                    + "USB 调试已开启，并在手机上点「允许 USB 调试」后重试");
         }
         throw new IOException("等待 " + mode + " 设备超时（" + timeoutMs / 1000 + "s）");
     }
