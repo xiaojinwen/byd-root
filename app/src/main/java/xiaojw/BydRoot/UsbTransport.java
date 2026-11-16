@@ -106,6 +106,9 @@ public final class UsbTransport {
                 for (int i = 0; i < d.getInterfaceCount(); i++) {
                     UsbInterface intf = d.getInterface(i);
                     if (intf.getInterfaceClass() != UsbConstants.USB_CLASS_VENDOR_SPEC) continue;
+                    // 刚从 ADB 切 bootloader 时 ADB 接口可能仍在枚举，别把它误当成 fastboot，
+                    // 否则命令会写到 ADB 端点，表现为「USB 写入失败 / fastboot 无响应」。
+                    if (modeMatches(intf, MODE_ADB)) continue;
                     Target t = makeTarget(d, intf, mode);
                     if (t != null) return t;
                 }
@@ -266,13 +269,21 @@ public final class UsbTransport {
             while (sent < len) {
                 if (closed) throw new IOException("USB 已断开");
                 int want = Math.min(CHUNK, len - sent);
-                int n;
-                if (off + sent == 0 && want == data.length) {
-                    n = conn.bulkTransfer(out, data, want, timeoutMs);
-                } else {
-                    n = conn.bulkTransfer(out, data, off + sent, want, timeoutMs);
+                int n = -1;
+                // 设备刚枚举 / 刚从 ADB 切到 fastboot 时，OUT 端点会短暂 NAK（bulkTransfer 返回 -1）。
+                // 这不是真拔出，重试几次即可，避免误判成「设备已拔出」中断流程。
+                for (int attempt = 0; attempt < 3 && n < 0; attempt++) {
+                    if (closed) throw new IOException("USB 已断开");
+                    n = (off + sent == 0 && want == data.length)
+                            ? conn.bulkTransfer(out, data, want, timeoutMs)
+                            : conn.bulkTransfer(out, data, off + sent, want, timeoutMs);
+                    if (n < 0 && attempt < 2) {
+                        try { Thread.sleep(300); }
+                        catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    }
                 }
-                if (n < 0) throw new IOException("USB 写入失败（设备可能已拔出）@" + sent);
+                if (n < 0) throw new IOException("USB 写入失败（端点未就绪或设备已断开）@" + sent
+                        + "；请重插 USB 数据线，或让车机重新进入 fastboot 后重试");
                 if (n == 0) throw new IOException("USB 写入超时 @" + sent);
                 sent += n;
             }

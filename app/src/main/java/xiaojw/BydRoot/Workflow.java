@@ -33,6 +33,8 @@ public final class Workflow {
     public static final int REBOOT = 12;
     public static final int FLASH_GUARDIAN = 13;
     public static final int AUTO_BACKUP = 14;
+    /** ADB 阶段（临时 Root 后、刷 boot 前）把资源文件预推到 /data/local/tmp，避免 fastboot 之后再推。 */
+    public static final int PUSH_ASSETS = 15;
 
     /** 推送到车机的临时文件名；救砖模块不再内置，须由用户在资源目录提供（文件名含防砖/救砖）。 */
     public static final String GUARDIAN_ASSET = "guardian-module.zip";
@@ -44,15 +46,17 @@ public final class Workflow {
             "连接设备", "识别版本", "校验文件", "临时 Root", "长期 Root",
             "安装 Magisk / MT", "禁用下载应用", "Magisk 修复引导", "验证 Root",
             "刷入模块", "清缓存 / 完成", "修复小迪", "重启车机", "安装救砖模块",
-            "自动全分区备份"
+            "自动全分区备份", "推送资源文件"
     };
 
     /**
      * 完整流程：临时 Root 后、刷入 boot 前先备份，此时 boot 分区仍是原始镜像；
-     * 救砖守护先于待刷模块包就位并重启自检，后续模块若导致无法开机才能被自动禁用。
+     * 同一 ADB 阶段把 Magisk/MT/模块包预推到 /data/local/tmp，刷 boot 重启后直接安装，
+     * 不再依赖 fastboot 之后的 ADB 重新推文件。救砖守护先于待刷模块包就位并重启自检，
+     * 后续模块若导致无法开机才能被自动禁用。
      */
     public static final int[] FULL_FLOW = {
-            CONNECT, DETECT, VERIFY, TEMP_ROOT, AUTO_BACKUP, PERM_ROOT, INSTALL_APKS,
+            CONNECT, DETECT, VERIFY, TEMP_ROOT, AUTO_BACKUP, PUSH_ASSETS, PERM_ROOT, INSTALL_APKS,
             DISABLE_DOCS, MANUAL_STEPS, CHECK_ROOT, FLASH_GUARDIAN, FLASH_MODULE, FINISH
     };
 
@@ -72,7 +76,7 @@ public final class Workflow {
     public static boolean needsResourceDir(int s) {
         return s == DETECT || s == VERIFY || s == TEMP_ROOT || s == PERM_ROOT
                 || s == INSTALL_APKS || s == FLASH_MODULE || s == AUTO_BACKUP
-                || s == FLASH_GUARDIAN;
+                || s == FLASH_GUARDIAN || s == PUSH_ASSETS;
     }
 
     public static final class Settings {
@@ -182,6 +186,7 @@ public final class Workflow {
             case REBOOT:       rebootDevice(); break;
             case FLASH_GUARDIAN: flashGuardian(); break;
             case AUTO_BACKUP:   autoBackup(); break;
+            case PUSH_ASSETS:   pushAssets(); break;
             default: throw new IOException("未知步骤 " + s);
         }
     }
@@ -212,8 +217,15 @@ public final class Workflow {
     private void connectAdb() throws Exception {
         if (adb != null && adb.isConnected()) { ui.log("ok", "复用当前 ADB 连接"); return; }
         if (adb != null) adb.close();
+        boolean useWifi = settings.wifiAdb && settings.host != null && !settings.host.trim().isEmpty();
+        // 只有 fastboot 设备、没有 ADB 接口时直接拦下：fastboot 下无法 adb push / pm install。
+        if (!useWifi && UsbTransport.find(ctx, UsbTransport.MODE_ADB) == null
+                && UsbTransport.find(ctx, UsbTransport.MODE_FASTBOOT) != null) {
+            throw new IOException("车机当前处于 fastboot 模式，无法执行 adb push / pm install；"
+                    + "请先重启回系统（fastboot reboot 或长按电源）后再操作");
+        }
         adb = newClient();
-        if (settings.wifiAdb && settings.host != null && !settings.host.trim().isEmpty()) {
+        if (useWifi) {
             adb.connectTcp(settings.host.trim(), settings.port, 15000);
         } else {
             adb.connectUsb(30000);
@@ -360,6 +372,82 @@ public final class Workflow {
         waitAdb(180000);
     }
 
+    // ---------- 阶段 4.5：ADB 阶段预推送资源 ----------
+
+    /**
+     * 临时 Root 后的 ADB 阶段，把后续要用的文件一次推进 /data/local/tmp：
+     * Magisk.apk、MT.apk、待刷模块包、救砖模块。/data/local/tmp 位于 /data，重启后仍在，
+     * 因此刷 boot 重启后只需 pm install / magisk --install-module，不再二次 adb push。
+     */
+    private void pushAssets() throws Exception {
+        requireRes();
+        connectAdb();
+        if (bootFile == null || moduleFile == null) verify();
+
+        pushOptionalApk("Magisk.apk");
+        pushOptionalApk("MT.apk");
+
+        if (moduleFile == null) throw new IOException("未找到待刷模块包（.zip）");
+        ensureRemote(moduleFile, moduleRemote(), "0644", true);
+        ui.log("ok", "模块包已就位：" + moduleRemote());
+
+        ResourceDir.FileRef g = res.findGuardianZip();
+        if (g != null) {
+            ensureRemote(g, guardianRemote(), "0644", true);
+            ui.log("ok", "救砖模块已就位：" + guardianRemote());
+        } else {
+            ui.log("warn", "资源目录未找到救砖模块（文件名含防砖/救砖），跳过预推送");
+        }
+        ui.log("ok", "资源文件预推送完成，重启后无需再推送");
+    }
+
+    private String moduleRemote() { return "/data/local/tmp/module-" + controller + ".zip"; }
+    private String guardianRemote() { return "/data/local/tmp/" + GUARDIAN_ASSET; }
+
+    private void pushOptionalApk(String name) {
+        ResourceDir.FileRef f = res.findApk(name);
+        if (f == null) { ui.log("warn", "跳过：未找到 " + name); return; }
+        try {
+            ensureRemote(f, "/data/local/tmp/" + name, "0644", true);
+            ui.log("ok", name + " 已就位");
+        } catch (Exception e) {
+            ui.log("warn", "预推送 " + name + " 失败（后续安装时会重试）：" + e.getMessage());
+        }
+    }
+
+    /** 车机上是否已存在该文件；用 [ -f ] 判断，shell 权限即可，不需要 root。 */
+    private boolean remoteExists(String remote) {
+        try {
+            String out = adb.shell("[ -f " + remote + " ] && echo __YES__ || echo __NO__", 15000);
+            return out.contains("__YES__");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 已推送则复用，缺失才补推；单步执行没走过 PUSH_ASSETS 时也能自动补齐。 */
+    private void ensureRemote(ResourceDir.FileRef f, String remote, String mode) throws Exception {
+        ensureRemote(f, remote, mode, false);
+    }
+
+    /**
+     * force=true 时无条件覆盖：预推送阶段必须用，否则用户换了新模块包，
+     * 车机上同名旧文件会让 ensureRemote 误判「已就位」而跳过。
+     */
+    private void ensureRemote(ResourceDir.FileRef f, String remote, String mode, boolean force)
+            throws Exception {
+        if (!force && remoteExists(remote)) {
+            ui.log("info", "车机上已存在，跳过推送：" + remote);
+            return;
+        }
+        long size = res.sizeOf(f);
+        if (size <= 0) throw new IOException("文件大小无效：" + f.name);
+        ui.log("info", "推送 " + f.name + " → " + remote + "（" + size + " 字节）");
+        InputStream in = res.open(f);
+        try { adb.push(in, size, remote, mode, progress); }
+        finally { in.close(); }
+    }
+
     // ---------- 阶段 5：安装 Magisk / MT ----------
 
     private void installApks() throws Exception {
@@ -373,10 +461,7 @@ public final class Workflow {
         ResourceDir.FileRef f = res.findApk(name);
         if (f == null) { ui.log("warn", "跳过：未找到 " + name); return; }
         String tmp = "/data/local/tmp/" + name;
-        ui.log("info", "推送 " + name + "…");
-        InputStream in = res.open(f);
-        try { adb.push(in, res.sizeOf(f), tmp, "0644", progress); }
-        finally { in.close(); }
+        ensureRemote(f, tmp, "0644");
         String out = adb.shell("pm install -r " + tmp, 180000);
         String trimmed = out.trim();
         ui.log(trimmed.contains("Success") ? "ok" : "warn", name + " 安装结果：" + trimmed);
@@ -429,11 +514,9 @@ public final class Workflow {
         requireRes();
         if (moduleFile == null) verify();
         connectAdb();
-        String tmp = "/data/local/tmp/module-" + controller + ".zip";
-        ui.log("info", "推送模块包到 " + tmp);
-        InputStream in = res.open(moduleFile);
-        try { adb.push(in, res.sizeOf(moduleFile), tmp, "0777", progress); }
-        finally { in.close(); }
+        String tmp = moduleRemote();
+        ensureRemote(moduleFile, tmp, "0644");
+        ui.log("info", "使用已推送的模块包 " + tmp);
         adb.shell("su -c 'chown root:root " + tmp + "'", 15000);
         adb.shell("su -c 'chmod 0777 " + tmp + "'", 15000);
         ui.log("info", "执行 magisk --install-module …");
@@ -457,8 +540,7 @@ public final class Workflow {
             throw new IOException("安装救砖模块需要 root，请先完成「长期 Root」并在 Magisk 里授权 su");
         }
 
-        InputStream in = null;
-        String tmp = "/data/local/tmp/" + GUARDIAN_ASSET;
+        String tmp = guardianRemote();
         try {
             if (res == null) {
                 throw new IOException("请先在「准备资源目录」选择目录，并放入救砖模块（文件名含防砖/救砖）");
@@ -467,14 +549,12 @@ public final class Workflow {
             if (f == null) {
                 throw new IOException("未在资源目录找到救砖模块（文件名需含防砖/救砖）");
             }
-            in = res.open(f);
             long size = res.sizeOf(f);
             String from = f.name + "（资源目录）";
             if (size <= 0) throw new IOException("救砖模块大小无效：" + from);
 
             ui.log("info", "救砖模块来源：" + from + "（" + size + " 字节）");
-            ui.log("info", "推送到 " + tmp);
-            adb.push(in, size, tmp, "0777", progress);
+            ensureRemote(f, tmp, "0644");
             adb.shell("su -c 'chmod 0777 " + tmp + "'", 15000);
 
             ui.log("info", "执行 magisk --install-module …");
@@ -503,7 +583,6 @@ public final class Workflow {
                 ui.log("warn", "未探测到模块目录，完整流程继续；重启后请在 Magisk 模块页确认");
             }
         } finally {
-            if (in != null) try { in.close(); } catch (Exception ignored) { }
             try { adb.shell("su -c 'rm -f " + tmp + "'", 15000); } catch (Exception ignored) { }
         }
 

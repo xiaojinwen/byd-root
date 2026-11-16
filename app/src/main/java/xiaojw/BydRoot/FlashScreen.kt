@@ -223,8 +223,9 @@ fun FlashScreen(
                         onClick = {
                             state.askConfirm(
                                 title = "执行完整流程？",
-                                message = "将依次完成：识别版本 → 校验文件 → 临时 Root → 全分区备份 → 长期 Root → " +
+                                message = "将依次完成：识别版本 → 校验文件 → 临时 Root → 全分区备份 → 预推送资源 → 长期 Root → " +
                                     "装 Magisk / MT → 装救砖模块并重启自检（约 90 秒）→ 刷模块包 → 清缓存重启。\n\n" +
+                                    "资源文件会在临时 Root 后的 ADB 阶段先推到 /data/local/tmp，刷 boot 重启后直接安装，不再二次推送。\n" +
                                     "boot 分区会被改写，车机会多次重启；全程需保持 USB OTG 连接，请勿拔线或断电。",
                                 confirmText = "开始执行",
                                 danger = true
@@ -247,8 +248,10 @@ fun FlashScreen(
                     )
                 }
                 HintText(
-                    "连接 → 识别版本 → 校验文件 → 临时 Root → 全分区备份 → 长期 Root → " +
+                    "连接 → 识别版本 → 校验文件 → 临时 Root → 全分区备份 → 预推送资源 → 长期 Root → " +
                         "装 Magisk / MT → 装救砖模块并重启自检 → 刷模块包 → 清缓存重启。" +
+                        "资源文件（Magisk/MT/模块包/救砖模块）在临时 Root 后的 ADB 阶段就推到 /data/local/tmp，" +
+                        "刷 boot 重启后直接安装，避免在 fastboot 阶段推送。" +
                         "救砖守护会先单独重启并等约 90 秒自检，再刷风险模块；中途 Root 两步自动切 fastboot。\n\n" +
                         "自动备份由第 4 步「备份选项」里的开关控制，默认开启，且会先弹窗让你确认预计体积。" +
                         "每次备份单独新建 backup-<时间戳> 子目录，不会覆盖目录里平铺的资源文件。",

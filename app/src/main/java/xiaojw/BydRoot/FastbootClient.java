@@ -43,7 +43,43 @@ public final class FastbootClient implements Closeable {
 
     public static FastbootClient connect(Context ctx, UiBridge ui, long timeoutMs)
             throws IOException, InterruptedException {
-        return new FastbootClient(ui, UsbTransport.open(ctx, ui, UsbTransport.MODE_FASTBOOT, timeoutMs));
+        UsbTransport.Bulk bulk = UsbTransport.open(ctx, ui, UsbTransport.MODE_FASTBOOT, timeoutMs);
+        FastbootClient fc = new FastbootClient(ui, bulk);
+        // 车机刚从 ADB 切到 fastboot 时，USB 端点可能还没就绪：先握手探活，失败则重开一次。
+        if (!fc.warmUp()) {
+            ui.log("warn", "fastboot 首次握手无响应，重新打开 USB 设备…");
+            bulk.close();
+            bulk = UsbTransport.open(ctx, ui, UsbTransport.MODE_FASTBOOT, 30000);
+            fc = new FastbootClient(ui, bulk);
+            if (!fc.warmUp()) {
+                fc.close();
+                throw new IOException("fastboot 无响应：车机可能未真正进入 bootloader，"
+                        + "请重插 USB 数据线后重试");
+            }
+        }
+        return fc;
+    }
+
+    /**
+     * 用 getvar:version 短超时探测 bootloader 是否已能响应命令。
+     * 收到任意字节即视为就绪（FAIL 也说明设备有响应）。
+     */
+    private boolean warmUp() {
+        for (int i = 0; i < 8; i++) {
+            if (ui.isCancelled()) return false;
+            try { writeCommand("getvar:version"); }
+            catch (IOException e) {
+                if (bulk.closed) return false;
+            }
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline) {
+                int n = bulk.read(respBuf, 1000);
+                if (n > 0) return true;
+            }
+            try { Thread.sleep(800); }
+            catch (InterruptedException ie) { Thread.currentThread().interrupt(); return false; }
+        }
+        return false;
     }
 
     /** 发一条命令，循环消费 INFO/TEXT、处理 DATA，直到 OKAY/FAIL。 */

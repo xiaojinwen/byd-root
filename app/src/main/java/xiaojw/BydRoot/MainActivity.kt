@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Modifier
+import java.io.IOException
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -586,10 +587,15 @@ class MainActivity : ComponentActivity(), UiBridge, FlashActions, ToolsActions {
     }
 
     private fun connectAdb(): AdbClient {
+        val h = settings.host.orEmpty()
+        val useWifi = settings.wifiAdb && h.isNotBlank()
+        if (!useWifi && UsbTransport.find(this, UsbTransport.MODE_ADB) == null &&
+            UsbTransport.find(this, UsbTransport.MODE_FASTBOOT) != null) {
+            throw IOException("车机当前处于 fastboot 模式，无法推送 / 安装；请先重启回系统（fastboot reboot）后再操作")
+        }
         val adb = AdbClient(this, this)
         try {
-            val h = settings.host.orEmpty()
-            if (settings.wifiAdb && h.isNotBlank()) adb.connectTcp(h.trim(), settings.port, 15000)
+            if (useWifi) adb.connectTcp(h.trim(), settings.port, 15000)
             else adb.connectUsb(30000)
         } catch (e: Exception) {
             adb.close()
