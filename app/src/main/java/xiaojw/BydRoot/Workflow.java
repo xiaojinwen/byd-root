@@ -263,6 +263,35 @@ public final class Workflow {
         throw new IOException("等待 ADB 恢复超时，请检查 USB 连接与车机状态");
     }
 
+    /**
+     * adbd 起来 ≠ 系统起来：重启后 adb 能连上时 framework 往往还没注册 package 服务，
+     * 此时 pm install 会返回「cmd: Can't find service: package」。
+     * 这里轮询 pm path android 直到框架真正可用，再执行安装类操作。
+     */
+    private void waitFrameworkReady(long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        boolean announced = false;
+        while (System.currentTimeMillis() < deadline) {
+            checkCancel();
+            try {
+                String pm = adb.shell("pm path android", 10000);
+                if (pm != null && pm.contains("package:")) {
+                    if (announced) ui.log("ok", "车机系统服务已就绪，继续执行");
+                    return;
+                }
+            } catch (Exception ignored) {
+                // adb 短暂断连：继续轮询
+            }
+            if (!announced) {
+                ui.log("info", "等待车机系统服务就绪（package 服务尚未注册）…");
+                announced = true;
+            }
+            Thread.sleep(2000);
+        }
+        throw new IOException("等待车机系统服务就绪超时：package 服务未启动，"
+                + "请确认车机已正常开机后再重试");
+    }
+
     private void requireRes() throws IOException {
         if (res == null) throw new IOException("请先选择资源目录");
     }
@@ -425,6 +454,36 @@ public final class Workflow {
         }
     }
 
+    /**
+     * 存在且字节数一致才算「就位」：push 中途断线会留下截断文件，
+     * 只判存在会让后续 pm install / magisk 装到坏包。
+     */
+    private boolean remoteReady(String remote, long expectSize) {
+        try {
+            String out = adb.shell("[ -f " + remote + " ] && wc -c < " + remote + " || echo 0", 15000);
+            long got = firstNumber(out);
+            return got > 0 && (expectSize <= 0 || got == expectSize);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 从 shell 输出里取第一段连续数字（wc 输出可能带空白/CRLF）。 */
+    private long firstNumber(String s) {
+        if (s == null) return -1;
+        long v = -1;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '0' && c <= '9') {
+                if (v < 0) v = 0;
+                v = v * 10 + (c - '0');
+            } else if (v >= 0) {
+                break;
+            }
+        }
+        return v;
+    }
+
     /** 已推送则复用，缺失才补推；单步执行没走过 PUSH_ASSETS 时也能自动补齐。 */
     private void ensureRemote(ResourceDir.FileRef f, String remote, String mode) throws Exception {
         ensureRemote(f, remote, mode, false);
@@ -436,22 +495,28 @@ public final class Workflow {
      */
     private void ensureRemote(ResourceDir.FileRef f, String remote, String mode, boolean force)
             throws Exception {
-        if (!force && remoteExists(remote)) {
-            ui.log("info", "车机上已存在，跳过推送：" + remote);
-            return;
-        }
         long size = res.sizeOf(f);
         if (size <= 0) throw new IOException("文件大小无效：" + f.name);
+        if (!force && remoteReady(remote, size)) {
+            ui.log("info", "车机上已存在且大小一致，跳过推送：" + remote);
+            return;
+        }
         ui.log("info", "推送 " + f.name + " → " + remote + "（" + size + " 字节）");
         InputStream in = res.open(f);
         try { adb.push(in, size, remote, mode, progress); }
         finally { in.close(); }
+        if (!remoteReady(remote, size)) {
+            throw new IOException("推送后校验失败（车机上文件大小不符）：" + remote
+                    + "，请检查 USB 连接后重试");
+        }
     }
 
     // ---------- 阶段 5：安装 Magisk / MT ----------
 
     private void installApks() throws Exception {
         connectAdb();
+        // 重启后 adbd 先就绪、framework 后起，必须先等 package 服务可用再装。
+        waitFrameworkReady(180000);
         installApk("Magisk.apk");
         installApk("MT.apk");
     }
@@ -462,18 +527,45 @@ public final class Workflow {
         if (f == null) { ui.log("warn", "跳过：未找到 " + name); return; }
         String tmp = "/data/local/tmp/" + name;
         ensureRemote(f, tmp, "0644");
-        String out = adb.shell("pm install -r " + tmp, 180000);
-        String trimmed = out.trim();
-        ui.log(trimmed.contains("Success") ? "ok" : "warn", name + " 安装结果：" + trimmed);
-        adb.shell("rm -f " + tmp, 15000);
+
+        String out = "";
+        for (int i = 1; i <= 3; i++) {
+            out = adb.shell("pm install -r " + tmp, 180000).trim();
+            if (out.contains("Success")) break;
+            if (out.contains("Can't find service") || out.contains("Failure")) {
+                ui.log("warn", name + " 安装失败（第 " + i + "/3 次）：" + out);
+                if (i < 3) {
+                    waitFrameworkReady(120000);
+                    Thread.sleep(3000);
+                }
+                continue;
+            }
+            break;
+        }
+
+        if (out.contains("Success")) {
+            ui.log("ok", name + " 安装成功");
+            adb.shell("rm -f " + tmp, 15000);
+        } else {
+            // 保留安装包，便于单步重试时不再重新推送
+            ui.log("warn", name + " 安装未成功：" + out + "（安装包已保留：" + tmp + "）");
+        }
     }
 
     // ---------- 阶段 6：禁用下载应用 ----------
 
     private void disableDocs() throws Exception {
         connectAdb();
-        String out = adb.shell("pm disable-user --user 0 com.android.documentsui", 25000);
-        ui.log("ok", "禁用 com.android.documentsui：" + out.trim());
+        waitFrameworkReady(120000);
+        String out = "";
+        for (int i = 1; i <= 3; i++) {
+            out = adb.shell("pm disable-user --user 0 com.android.documentsui", 25000).trim();
+            if (!out.contains("Can't find service")) break;
+            ui.log("warn", "禁用失败（第 " + i + "/3 次，package 服务未就绪），等待后重试…");
+            if (i < 3) waitFrameworkReady(120000);
+        }
+        ui.log(out.contains("Can't find service") ? "warn" : "ok",
+                "禁用 com.android.documentsui：" + out);
     }
 
     // ---------- 阶段 7：手动步骤引导 ----------
@@ -514,6 +606,7 @@ public final class Workflow {
         requireRes();
         if (moduleFile == null) verify();
         connectAdb();
+        waitFrameworkReady(120000);
         String tmp = moduleRemote();
         ensureRemote(moduleFile, tmp, "0644");
         ui.log("info", "使用已推送的模块包 " + tmp);
@@ -535,6 +628,7 @@ public final class Workflow {
      */
     private void flashGuardian() throws Exception {
         connectAdb();
+        waitFrameworkReady(120000);
         String id = adb.shell("su -c id", 20000);
         if (!id.contains("uid=0")) {
             throw new IOException("安装救砖模块需要 root，请先完成「长期 Root」并在 Magisk 里授权 su");
